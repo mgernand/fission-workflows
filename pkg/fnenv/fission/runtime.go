@@ -20,6 +20,8 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 )
 
+var log = logrus.WithField("component", "fnenv-fission")
+
 // FunctionEnv adapts the Fission platform to the function execution runtime.
 type FunctionEnv struct {
 	executor *executor.Client
@@ -39,12 +41,11 @@ func (fe *FunctionEnv) Invoke(spec *types.TaskInvocationSpec) (*types.TaskInvoca
 		UID:       k8stypes.UID(spec.GetType().GetResolved()),
 		Namespace: metav1.NamespaceDefault,
 	}
-	logrus.WithFields(logrus.Fields{
-		"metadata": meta,
-	}).Info("Invoking Fission function.")
+	ctxLog := log.WithField("fn", meta.Name)
+	ctxLog.Infof("Invoking Fission function: '%v'.", meta.Name, meta.UID)
 	serviceUrl, err := fe.executor.GetServiceForFunction(meta)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
+		log.WithFields(logrus.Fields{
 			"err":  err,
 			"meta": meta,
 		}).Error("Fission function failed!")
@@ -67,7 +68,6 @@ func (fe *FunctionEnv) Invoke(spec *types.TaskInvocationSpec) (*types.TaskInvoca
 	}
 
 	r := bytes.NewReader(input)
-	logrus.Infof("[request][body]: %v", string(input))
 	// TODO map other parameters as well (to params)
 
 	req, err := http.NewRequest(http.MethodPost, url, r)
@@ -79,23 +79,24 @@ func (fe *FunctionEnv) Invoke(spec *types.TaskInvocationSpec) (*types.TaskInvoca
 	router.MetadataToHeaders(router.HEADERS_FISSION_FUNCTION_PREFIX, meta, req)
 
 	reqContentType := ToContentType(mainInput)
-	logrus.Infof("[request][Content-Type]: %v", reqContentType)
 	req.Header.Set("Content-Type", reqContentType)
+	ctxLog.Infof("[request][Content-Type]: %v", reqContentType)
+	ctxLog.Debugf("[request][body]: %v", string(input))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error for url '%s': %v", serviceUrl, err)
 	}
 
-	logrus.Infof("[%s][Content-Type]: %v ", meta.Name, resp.Header.Get("Content-Type"))
 	output := ToTypedValue(resp)
-	logrus.Infof("[%s][output]: %v", meta.Name, output)
-	logrus.Infof("[%s][status]: %v", meta.Name, resp.StatusCode)
+	ctxLog.Infof("[response][status]: %v", meta.Name, resp.StatusCode)
+	ctxLog.Infof("[response][Content-Type]: %v ", meta.Name, resp.Header.Get("Content-Type"))
+	ctxLog.Debugf("[%s][output]: %v", meta.Name, output)
 
 	// Determine status of the task invocation
 	if resp.StatusCode >= 400 {
 		msg, _ := typedvalues.Format(output)
-		logrus.Warn("[%s] Failed %v: %v", resp.StatusCode, msg)
+		ctxLog.Warn("[%s] Failed %v: %v", resp.StatusCode, msg)
 		return &types.TaskInvocationStatus{
 			Status: types.TaskInvocationStatus_FAILED,
 			Error: &types.Error{
@@ -142,10 +143,10 @@ func ToTypedValue(resp *http.Response) *types.TypedValue {
 
 	var i interface{} = body
 	if strings.Contains(contentType, "application/json") || strings.Contains(contentType, "text/json") {
-		logrus.Info("Assuming JSON")
+		log.Info("Assuming JSON")
 		err := json.Unmarshal(body, &i)
 		if err != nil {
-			logrus.Warnf("Expected JSON response could not be parsed: %v", err)
+			log.Warnf("Expected JSON response could not be parsed: %v", err)
 		}
 	}
 
